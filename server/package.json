@@ -1,0 +1,20 @@
+{
+  "name": "momentum-server",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "RESTful API backend for Momentum (Express + node:sqlite).",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22.5.0"
+  },
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node --no-warnings src/index.js",
+    "dev": "node --no-warnings --watch src/index.js"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^4.21.2"
+  }
+}
