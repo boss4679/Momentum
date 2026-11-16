@@ -31,6 +31,8 @@ services:
       # Inside the Compose network, the database's hostname is its service name, `db`.
       DATABASE_URL: postgres://momentum:momentum@db:5432/momentum
       TEST_DATABASE_URL: postgres://momentum:momentum@db:5432/momentum_test
+      # Development-only secret. Never reuse a value committed to git in production.
+      JWT_SECRET: dev-only-secret-change-me
     ports:
       - '4000:4000'
     depends_on:

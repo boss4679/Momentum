@@ -18,7 +18,17 @@ module.exports = [
     rules: {
       // Unused function args are common in Express (e.g. `next` in error handlers);
       // prefix them with _ to mark them as intentionally unused.
-      'no-unused-vars': ['error', { argsIgnorePattern: '^_' }],
+      //
+      // ignoreRestSiblings: `const { passwordHash, ...user } = row` is the idiomatic way to
+      // drop a field from an object, so the dropped name shouldn't count as unused.
+      'no-unused-vars': ['error', { argsIgnorePattern: '^_', ignoreRestSiblings: true }],
+    },
+  },
+  {
+    // Jest provides describe/test/expect/jest as globals inside test files.
+    files: ['server/tests/**/*.js'],
+    languageOptions: {
+      globals: { ...globals.jest },
     },
   },
 ];
