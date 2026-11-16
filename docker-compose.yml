@@ -1,0 +1,61 @@
+# `docker compose up` starts the database, the API and the frontend.
+#   Frontend: http://localhost:5173   API: http://localhost:4000/api/health   Postgres: localhost:5432
+# Seed demo data with: docker compose exec api npm run seed
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: momentum
+      POSTGRES_PASSWORD: momentum
+      POSTGRES_DB: momentum
+    ports:
+      - '5432:5432'
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      # Runs once on first start: creates the separate momentum_test database.
+      - ./db/init:/docker-entrypoint-initdb.d:ro
+    # The API waits for this check to pass, not just for the container to start.
+    # Postgres takes a few seconds after the container starts before it accepts connections.
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U momentum -d momentum']
+      interval: 2s
+      timeout: 3s
+      retries: 15
+
+  api:
+    build: ./server
+    environment:
+      NODE_ENV: development
+      PORT: 4000
+      # Inside the Compose network, the database's hostname is its service name, `db`.
+      DATABASE_URL: postgres://momentum:momentum@db:5432/momentum
+      TEST_DATABASE_URL: postgres://momentum:momentum@db:5432/momentum_test
+    ports:
+      - '4000:4000'
+    depends_on:
+      db:
+        condition: service_healthy
+    # Apply any pending migrations, then start with --watch so code edits reload.
+    command: sh -c "npm run migrate -- up && npm run dev"
+    volumes:
+      # Mount the source for live reload. The anonymous volume on node_modules keeps the
+      # container's own installed packages from being hidden by the host folder.
+      - ./server:/app
+      - /app/node_modules
+
+  client:
+    build: ./client
+    environment:
+      # Vite's dev server proxies /api to this address (see client/vite.config.js).
+      API_PROXY_TARGET: http://api:4000
+    ports:
+      - '5173:5173'
+    depends_on:
+      - api
+    volumes:
+      - ./client:/app
+      - /app/node_modules
+
+volumes:
+  pgdata:

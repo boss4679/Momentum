@@ -1,9 +1,11 @@
 node_modules/
 dist/
-server/data/*.db
-server/data/*.db-*
+coverage/
 *.log
 .DS_Store
+
+# Local environment (copy from .env.example)
+.env
 
 # Local tooling / editor settings
 .claude/

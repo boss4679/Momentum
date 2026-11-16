@@ -1,0 +1,7 @@
+node_modules
+dist
+coverage
+package-lock.json
+
+# Old client code, rewritten in milestone 5 (remove this line then)
+client/src
