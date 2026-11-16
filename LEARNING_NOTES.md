@@ -272,3 +272,49 @@ an interviewer might ask about it.
 
 6. **Why build the week grid yourself instead of using a calendar library?**
    The spec asked for it, and it's a small problem once split in two. `layoutWeek()` is pure: it splits events crossing midnight into per-day pieces, computes start and end minutes, and assigns lanes, all testable with plain objects. The component then just positions buttons absolutely inside a day column: top = minutes × pixels per minute. The hour lines are a repeating CSS gradient, not 24 extra elements.
+
+---
+
+## Milestone 6: CI, API docs, README
+
+### What was built
+
+- **`.github/workflows/ci.yml`:** three parallel jobs on every push and pull request.
+  - Lint and format: ESLint + Prettier.
+  - Server tests with coverage against a Postgres 16 **service container**. The coverage report is uploaded as an artifact.
+  - Client tests and a production build.
+  - Runs on Node 20, the oldest supported version. A newer push cancels a run still in progress.
+- **OpenAPI 3.1 document** (`server/src/docs/`), served as JSON at `/api/docs/openapi.json` and browsable with Swagger UI at `/api/docs`. There are 33 operations with bearer-token auth, shared error responses and tags.
+  - Request parameters and bodies are **generated from the Zod schemas** the `validate` middleware already uses (`z.toJSONSchema`), so the docs can't drift from the validation.
+  - Response schemas are written by hand in `docs/schemas.js`.
+- **`tests/api/docs.test.js`** (23 tests):
+  - The documented operations equal the routes registered in Express, compared in both directions.
+  - Real responses from every GET endpoint, login and a 422 match their documented schema exactly, with no missing, extra or wrongly typed fields. This uses a ~50-line shape checker instead of a validator library.
+- **README:** what the app does, a Mermaid architecture diagram, running with and without Docker, tests, an endpoint table, curl examples (run against the live API to check them), design decisions, and measured results.
+- **Final numbers:** 324 server tests (99.6% line coverage) + 35 client tests.
+
+### Key concepts
+
+- **CI service containers:** GitHub starts `postgres:16-alpine` next to the job, waits for its health check, and exposes it on `localhost:5432`. The tests run against a real database there too, just like locally. Jest's `globalSetup` applies migrations, so CI needs no separate setup step.
+- **Reproducing CI locally:** I copied the repo without `node_modules` or `.env` and ran every CI command in a `node:20` container next to a fresh Postgres. A clean install on the oldest supported Node is what catches "works on my machine" problems, like jsdom 31 needing Node 22 in milestone 5.
+- **Single source of truth for docs:** documentation written separately from code goes stale. Here the request side is generated from the validators, and the response side is checked by tests against real responses. Both directions of drift fail the build.
+- **Introspecting Express routes:** each router's `stack` lists its routes with path and methods. Express 5 doesn't store where a sub-router is mounted, so the test asks each mounted router's matcher which documented prefix it answers to.
+- **OpenAPI 3.1 vs 3.0:** 3.1 uses plain JSON Schema (2020-12), so Zod's output drops straight in. Nullable is `anyOf: [T, {type: 'null'}]` instead of 3.0's `nullable: true`.
+- **What the docs can't express:** cross-field rules like "endsAt after startsAt" or "weightKg needs reps" are `.refine()` checks in Zod with no JSON Schema equivalent. They're written into each operation's description instead.
+
+### Interview questions
+
+1. **What does your CI pipeline do?**
+   Three jobs in parallel on every push and PR: lint and format checks, the server test suite with coverage against a real Postgres 16 service container, and the client tests plus a production build. It uses Node 20 because that's the minimum the project supports, and dependencies are cached by lockfile. Jobs are independent, so one failure doesn't hide another. Before pushing it, I simulated it locally from a clean copy in a `node:20` container with a fresh database, and it passed.
+
+2. **How do you keep API documentation accurate?**
+   Two mechanisms. Request schemas aren't written twice: the OpenAPI parameters and bodies are generated from the same Zod schemas that validate requests, so changing validation changes the docs. Response schemas are hand-written, but a test calls every GET endpoint and compares the real JSON to the documented schema, flagging missing fields, extra fields and wrong types. Another test checks that the set of documented routes equals the set of routes Express actually has. I checked the tests work by breaking things on purpose: an undocumented new route, a documented route that doesn't exist, a wrong type, a missing field, and a renamed SQL column. All five fail the build.
+
+3. **Why test against a real database in CI instead of mocking it?**
+   Most of the logic that matters is in Postgres: constraints, the advisory lock, window functions, timezone conversion. A mock would only test that my code calls the mock the way I expect. A service container adds a few seconds of startup, which is a small price for testing the real behaviour.
+
+4. **Why OpenAPI 3.1?**
+   It's aligned with JSON Schema, which is what Zod exports, so the generated schemas are used directly without conversion. Swagger UI 5 renders it, and other tools can generate clients or run contract tests from the same file.
+
+5. **If you had more time, what would you add?**
+   An exclusion constraint for a "strict" calendar mode, refresh tokens with httpOnly cookies instead of localStorage, Playwright end-to-end tests against the Docker stack, a page for managing custom exercises, and code-splitting Recharts so the dashboard bundle is smaller.

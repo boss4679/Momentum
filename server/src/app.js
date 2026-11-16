@@ -3,11 +3,13 @@
 //
 // Middleware order matters: Express runs it top to bottom.
 const express = require('express');
+const swaggerUi = require('swagger-ui-express');
 const config = require('./config');
 const requestLogger = require('./middleware/requestLogger');
 const notFound = require('./middleware/notFound');
 const errorHandler = require('./middleware/errorHandler');
 const apiRoutes = require('./routes');
+const openApiDocument = require('./docs/openapi');
 
 const app = express();
 
@@ -21,6 +23,10 @@ if (config.logRequests) {
 // Parses JSON bodies. The size limit caps how much a single request can make the server
 // buffer; 100kb is far more than any real request here needs.
 app.use(express.json({ limit: '100kb' }));
+
+// API documentation: the raw OpenAPI document, and Swagger UI to browse and try it.
+app.get('/api/docs/openapi.json', (req, res) => res.json(openApiDocument));
+app.use('/api/docs', swaggerUi.serve, swaggerUi.setup(openApiDocument));
 
 app.use('/api', apiRoutes);
 
