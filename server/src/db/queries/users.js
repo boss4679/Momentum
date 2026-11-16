@@ -9,11 +9,14 @@
 //
 // password_hash is only selected by the one query that needs it (login), so it can't end
 // up in an API response by accident.
-const pool = require('../pool');
+//
+// Every query function takes `db` first: the shared pool for a standalone query, or a
+// transaction's client when the caller needs several statements to commit together.
+// The caller decides about transactions; the queries just run SQL.
 
-async function createUser({ email, passwordHash, timezone }) {
+async function createUser(db, { email, passwordHash, timezone }) {
   // COALESCE($3, 'UTC'): when no timezone is given, fall back to the same default as the column.
-  const { rows } = await pool.query(
+  const { rows } = await db.query(
     `INSERT INTO users (email, password_hash, timezone)
      VALUES ($1, $2, COALESCE($3, 'UTC'))
      RETURNING id, email, timezone, created_at AS "createdAt"`,
@@ -22,8 +25,8 @@ async function createUser({ email, passwordHash, timezone }) {
   return rows[0];
 }
 
-async function findUserWithHashByEmail(email) {
-  const { rows } = await pool.query(
+async function findUserWithHashByEmail(db, email) {
+  const { rows } = await db.query(
     `SELECT id, email, timezone, created_at AS "createdAt", password_hash AS "passwordHash"
      FROM users
      WHERE email = $1`,
@@ -32,8 +35,8 @@ async function findUserWithHashByEmail(email) {
   return rows[0] ?? null;
 }
 
-async function findUserById(id) {
-  const { rows } = await pool.query(
+async function findUserById(db, id) {
+  const { rows } = await db.query(
     `SELECT id, email, timezone, created_at AS "createdAt"
      FROM users
      WHERE id = $1`,

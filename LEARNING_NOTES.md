@@ -102,3 +102,57 @@ an interviewer might ask about it.
 
 6. **What happens when your code throws an unexpected error?**
    It reaches the central error handler, which doesn't recognise it as an `AppError` or a mapped Postgres error. It logs the full error and stack on the server, but returns a generic 500 `INTERNAL_ERROR`, so SQL, stack traces and internal details never reach the client. A test checks that SQL text from the thrown error doesn't appear in the response.
+
+---
+
+## Milestone 3: CRUD for every module
+
+### What was built
+
+- **Endpoints:** full CRUD (`GET` list, `GET /:id`, `POST`, `PUT /:id`, `DELETE /:id`) for `/api/exercises`, `/api/workouts`, `/api/events`, `/api/food-entries` and `/api/goals`, plus:
+  - `GET /api/workouts/personal-bests`: heaviest set, best reps and longest duration per exercise.
+  - `GET /api/goals/current?date=`: the goal in force on a given day.
+- **Lists:** `{ data, pagination: { limit, offset, total } }` with `?limit=&offset=`, date-range filters (`from`/`to`), and per-resource filters (`category`, `meal`).
+- **Workouts:** sets are nested in the request and the response. Create and update run in a transaction that checks every `exerciseId` belongs to the user, writes the workout, and replaces its sets.
+- **Events:** overlap detection returns 409 `EVENT_OVERLAP`, listing the clashing events. `?allowOverlap=true` skips the check. A per-user advisory lock closes the race between the check and the insert.
+- **Registration** now also creates a 10-exercise starter catalog, in the same transaction as the user.
+- **Queries take `db` as their first argument** (the pool, or a transaction's client), so the caller decides whether statements share a transaction.
+- **Tests:** 259 in total.
+  - Every endpoint's happy path and its 400/401/404/409/422 cases.
+  - `ownership.test.js`: for every resource, another user's GET, PUT and DELETE all return 404, and the data is unchanged afterwards.
+  - `protected.test.js`: every protected route returns 401 without a valid token.
+  - A transaction rollback test.
+  - A personal-bests test with hand-checkable numbers.
+  - A two-connection test proving the overlap lock works.
+
+### Key concepts
+
+- **Ownership in the WHERE clause:** every query includes `user_id = $n`, so another user's row looks exactly like a missing one, giving 404 rather than 403. A 403 would confirm the id exists.
+- **Optional filters:** `($2::date IS NULL OR performed_on >= $2)` lets one fixed SQL string handle "filter given" and "not given". The `::date` cast tells Postgres the parameter's type. node-pg sends unnamed statements, which Postgres plans with the actual values, so a NULL filter costs nothing.
+- **CTE + json_agg instead of N+1:** the workout list paginates workouts in a CTE, then joins sets and folds them into a JSON array per workout with `json_agg(... ORDER BY ...)`. That's one round trip instead of one per workout.
+- **DISTINCT ON:** keeps the first row per group in `ORDER BY` order. It's Postgres's tool for "the whole row of the best set per exercise", which `max()` can't do because it only returns the value.
+- **Interval overlap:** two ranges overlap when `a.start < b.end AND a.end > b.start`. Strict comparisons let back-to-back events (10:00 end, 10:00 start) through.
+- **Race conditions and advisory locks:** "check, then insert" isn't atomic. `pg_advisory_xact_lock(1, userId)` makes a second transaction for the same user wait until the first commits. Under READ COMMITTED it then sees the committed row. `FOR UPDATE` can't do this, because the clashing row doesn't exist yet.
+- **`SELECT ... FOR UPDATE`:** locks an existing row (the workout being edited) so two simultaneous edits run one after the other.
+- **PUT as full replacement:** the client sends the whole object, validated by the same schema as create. That's simpler than PATCH, which would need to tell "field omitted" apart from "set to null".
+- **Zod gotcha:** `z.coerce.boolean()` turns the string `"false"` into `true` (JavaScript truthiness), so query booleans are parsed as exactly `"true"`/`"false"`.
+
+### Interview questions
+
+1. **Why does accessing another user's workout return 404 and not 403?**
+   A 403 says "this exists, but it isn't yours", which lets anyone enumerate ids and learn how much data other accounts have. Every query filters on `user_id`, so someone else's row is indistinguishable from a missing one. `ownership.test.js` checks that the response bodies are identical, not just the status codes.
+
+2. **How do you prevent two overlapping events from being created at the same time?**
+   The overlap check and the insert run in one transaction, after `pg_advisory_xact_lock(1, userId)`. A second request for the same user blocks at the lock until the first commits, then its check sees the new event and returns 409. My first test fired 5 parallel HTTP requests, but it still passed with the lock removed, because the requests never truly overlapped. I replaced it with a test that drives two connections by hand through the exact interleaving, and confirmed it fails without the lock. The alternative is an exclusion constraint (`EXCLUDE USING gist (user_id WITH =, tstzrange(starts_at, ends_at) WITH &&)`), but that can't support `allowOverlap=true`.
+
+3. **Walk me through the query that lists workouts with their sets.**
+   The `page` CTE selects this user's workouts with the filters, newest first, with LIMIT/OFFSET. Paginating before the join means LIMIT counts workouts, not set rows. Then I LEFT JOIN sets and exercise names, GROUP BY the workout, and `json_agg(json_build_object(...) ORDER BY s.id)` builds each workout's sets array. `FILTER (WHERE s.id IS NOT NULL)` with `COALESCE(..., '[]')` turns "no sets" into `[]` instead of `[null]`.
+
+4. **Why check exercise ownership in code when there's a foreign key?**
+   The foreign key only proves the exercise exists. Without the check, Bob could log a set against Alice's exercise id and then see its name in his own workout. The check runs inside the same transaction as the insert and reports 422 at the exact field (`sets.1.exerciseId`). The database-level alternative would need `user_id` on `workout_sets`, which breaks 3NF.
+
+5. **How do you know your transaction actually rolls back?**
+   A test makes the second statement fail by mocking `insertSets` to throw after the workout row was inserted. It then checks that both table counts are unchanged. When I replaced `withTransaction` with plain pool queries, that test failed, so it catches a missing transaction.
+
+6. **How does personal bests pick the record set when weights tie?**
+   `DISTINCT ON (exercise_id) ... ORDER BY exercise_id, weight_kg DESC, reps DESC, performed_on ASC`: heaviest first, then more reps, then the earliest date, since that's when the record was first set. The test uses a tiny history where 62.5 kg × 5 happened on Mar 5 and again on Mar 7, and expects Mar 5.
