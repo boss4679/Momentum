@@ -1,11 +1,12 @@
-// ESLint flat config for the whole repo. The server is CommonJS on Node; the client
-// (ES modules + JSX in the browser) gets its own block in milestone 5.
+// ESLint flat config for the whole repo. The server is CommonJS on Node; the client is
+// ES modules + JSX in the browser. Each gets its own block below.
 const js = require('@eslint/js');
 const globals = require('globals');
+const reactHooks = require('eslint-plugin-react-hooks');
 
 module.exports = [
   {
-    ignores: ['**/node_modules/**', '**/dist/**', '**/coverage/**', 'client/**'],
+    ignores: ['**/node_modules/**', '**/dist/**', '**/coverage/**'],
   },
   js.configs.recommended,
   {
@@ -30,5 +31,29 @@ module.exports = [
     languageOptions: {
       globals: { ...globals.jest },
     },
+  },
+  {
+    files: ['client/**/*.{js,jsx}'],
+    languageOptions: {
+      ecmaVersion: 2023,
+      sourceType: 'module',
+      parserOptions: { ecmaFeatures: { jsx: true } },
+      globals: { ...globals.browser },
+    },
+    rules: {
+      'no-unused-vars': ['error', { argsIgnorePattern: '^_', ignoreRestSiblings: true }],
+    },
+  },
+  // The rules of hooks (only call hooks at the top level of a component) and
+  // exhaustive-deps (effects list everything they use), which catch real React bugs.
+  { files: ['client/**/*.{js,jsx}'], ...reactHooks.configs.flat.recommended },
+  {
+    // vite.config.js runs in Node, not the browser.
+    files: ['client/vite.config.js'],
+    languageOptions: { globals: { ...globals.node } },
+  },
+  {
+    files: ['client/src/**/*.test.{js,jsx}', 'client/src/test/**'],
+    languageOptions: { globals: { ...globals.node } },
   },
 ];

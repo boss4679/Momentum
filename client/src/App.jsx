@@ -1,49 +1,30 @@
-// Root app shell — top bar, tab navigation, and the active module view.
-import React, { useState } from 'react';
-import { ToastProvider } from './components/ui.jsx';
-import Dashboard from './components/Dashboard.jsx';
-import Workouts from './components/Workouts.jsx';
-import Calendar from './components/Calendar.jsx';
-import Nutrition from './components/Nutrition.jsx';
-
-const TABS = [
-  { id: 'dashboard', label: 'Dashboard', dot: 'linear-gradient(135deg, var(--workout), var(--nutrition))' },
-  { id: 'workouts', label: 'Workouts', dot: 'var(--workout)' },
-  { id: 'calendar', label: 'Calendar', dot: 'var(--calendar)' },
-  { id: 'nutrition', label: 'Nutrition', dot: 'var(--nutrition)' },
-];
+// The route table. Public pages (login, register) sit outside <RequireAuth>; everything
+// else is inside it and shares the <Layout> navigation.
+import { Route, Routes } from 'react-router';
+import RequireAuth from './auth/RequireAuth';
+import Layout from './components/Layout';
+import LoginPage from './pages/LoginPage';
+import RegisterPage from './pages/RegisterPage';
+import DashboardPage from './pages/DashboardPage';
+import WorkoutsPage from './pages/WorkoutsPage';
+import CalendarPage from './pages/CalendarPage';
+import FoodLogPage from './pages/FoodLogPage';
+import NotFoundPage from './pages/NotFoundPage';
 
 export default function App() {
-  const [tab, setTab] = useState('dashboard');
-
   return (
-    <ToastProvider>
-      <div className="app">
-        <header className="topbar">
-          <div className="brand">
-            <div className="brand-mark">M</div>
-            <div>
-              <h1>Momentum</h1>
-              <p>All-in-one productivity</p>
-            </div>
-          </div>
-          <div className="spacer" />
-        </header>
-
-        <nav className="tabs">
-          {TABS.map((t) => (
-            <button key={t.id} className={`tab ${tab === t.id ? 'active' : ''}`} onClick={() => setTab(t.id)}>
-              <span className="dot" style={{ background: t.dot }} />
-              {t.label}
-            </button>
-          ))}
-        </nav>
-
-        {tab === 'dashboard' && <Dashboard onNavigate={setTab} />}
-        {tab === 'workouts' && <Workouts />}
-        {tab === 'calendar' && <Calendar />}
-        {tab === 'nutrition' && <Nutrition />}
-      </div>
-    </ToastProvider>
+    <Routes>
+      <Route path="/login" element={<LoginPage />} />
+      <Route path="/register" element={<RegisterPage />} />
+      <Route element={<RequireAuth />}>
+        <Route element={<Layout />}>
+          <Route index element={<DashboardPage />} />
+          <Route path="workouts" element={<WorkoutsPage />} />
+          <Route path="calendar" element={<CalendarPage />} />
+          <Route path="food" element={<FoodLogPage />} />
+          <Route path="*" element={<NotFoundPage />} />
+        </Route>
+      </Route>
+    </Routes>
   );
 }

@@ -212,3 +212,63 @@ an interviewer might ask about it.
 
 7. **How did you make sure the tests would catch a wrong query?**
    I broke the SQL on purpose in five ways and checked each one made a test fail: a 6-day window instead of 7, no lookback before the range, unlogged days counted as zero, a streak that isn't kept alive by yesterday, and a window over logged days only (no gap filling). They all failed. One "passed" at first, but only because my script had edited the explanatory comment instead of the SQL; re-run against the real line, it failed as it should.
+
+---
+
+## Milestone 5: React frontend
+
+### What was built
+
+- **Stack:** React 19, React Router 7, Recharts 3, plain CSS. React Router 8 came out but needs Node 22, and the project targets Node 20, so it's pinned to v7. React went from 18 to 19 because current Router and Recharts expect it.
+- **`src/api/client.js`:** the only code that calls `fetch`. It adds `/api` and the Bearer token, parses JSON, turns `{error:{code,message,details}}` into an `ApiError` with `fieldErrors()`, and reports a 401 on a request that carried a token. `src/api/index.js` has one function per endpoint.
+- **Auth:**
+  - `src/auth/tokenStore.js` keeps the token in memory, with localStorage as a reload backup.
+  - `AuthContext.jsx` tracks `checking | authenticated | anonymous` and checks a stored token with `GET /auth/me` on load.
+  - `RequireAuth.jsx` guards every page except login and register.
+- **Hooks:**
+  - `useApiData(load, deps)` gives every view `{status, data, error, reload}` and ignores responses to outdated requests.
+  - `useFormSubmit(fn)` maps an `ApiError` to per-field messages plus a form-level banner.
+- **Shared components:** `StatusViews` (loading, error with retry, empty), `Field` (label, input, and an error linked with `aria-describedby`), `FormError`, `Modal`, `ProgressBar`, `Layout`.
+- **Pages:**
+  - Dashboard: four cards from `/summary/daily`, plus two charts from `/summary/trends` (calories with a 7-day average and goal; weekly volume as a separate chart).
+  - Workouts: a multi-set form, paged history with edit/delete, and personal bests.
+  - Calendar: a hand-built week grid. Click a slot to create an event, click an event to edit it. A 409 overlap answers with "Save anyway".
+  - Food log: grouped by meal, with a goal progress bar and a goal form.
+- **Pure, testable modules:** `utils/calendarLayout.js` (events → per-day pieces with lanes), `features/workouts/workoutFormModel.js` (form rows ↔ API body), `features/food/groupByMeal.js`.
+- **Tests:** 35 Vitest + React Testing Library tests, run in a non-UTC, DST-observing timezone (America/New_York). `test/mockFetch.js` fakes the network so the real API client runs in component tests.
+
+### Key concepts
+
+- **Server state vs UI state:** Data from the API (workouts, events) is loaded with `useApiData` and reloaded after a change. It's never copied into local state and edited by hand, so the screen can't drift from the database. Local state holds only UI things: which modal is open, what's typed in a form.
+- **Derived loading state:** `useApiData` doesn't store `status: 'loading'`. Each result remembers which request (key) it answers, and "loading" means the latest result is for an older key. This avoids calling `setState` inside the effect, which the React hooks lint rule flags because it causes an extra render. It also makes the out-of-order response problem easy to handle.
+- **Race conditions in the browser:** If the user clicks "next week" twice quickly, two requests are in flight, and the first can arrive last. The effect cleanup sets `ignore = true` for the old request, so its late answer is dropped.
+- **One source of navigation:** A 401 only changes auth state, and `RequireAuth` is the only thing that redirects to login. An earlier version also navigated from the 401 handler. Because React Router 7 runs navigations as transitions, the two redirects raced and the "session expired" notice was lost. A test caught it.
+- **Calendar dates vs instants on the client:**
+  - Workout and meal dates are strings like `'2026-03-02'`. They're compared and shifted as text via UTC, never through local midnight, so DST can't move them.
+  - Event times are instants. `<input type="datetime-local">` is local wall-clock time, so the form converts with `new Date(local).toISOString()` in one direction and reads local hours and minutes in the other.
+  - The week grid positions events by clock reading (hours × 60 + minutes), not by "milliseconds since midnight", which is off by an hour on DST days. A test covers 2026-03-08.
+- **Lane layout:** Sort a day's pieces by start time and put each into the first lane whose last event has already ended. Then left = lane / laneCount and width = 1 / laneCount. This is the greedy interval-partitioning algorithm.
+- **Accessible forms:** Server errors appear under the matching input. The input gets `aria-invalid` and `aria-describedby` pointing at the message, so a screen reader reads the error with the field. The tests query by label and role (what the user sees), not by CSS class.
+- **Chart choices:**
+  - Calories, average and goal share a unit (kcal), so they share one chart and one y-axis. Weekly volume is in kg, so it gets its own chart instead of a second axis.
+  - Two colors from a palette checked for colour-blind separation. The goal is also dashed, there's a legend, and a "Show table" toggle shows the same numbers without hovering.
+
+### Interview questions
+
+1. **How does your frontend handle authentication?**
+   After login, the JWT is kept in a module variable and copied to localStorage so a reload doesn't log the user out. The API client adds it as a Bearer header. On page load, a stored token is checked with `GET /auth/me` before any protected page renders (the "checking" state). If any request comes back 401 while a token was sent, the client calls a handler that clears the token and marks the session anonymous. The route guard then redirects to /login, saving the page the user was on so login can send them back. A 401 from the login form itself (wrong password) is just shown as an error. The trade-off of localStorage is XSS exposure. An httpOnly cookie would avoid that but needs CSRF protection, and the token's 1-hour lifetime limits the damage.
+
+2. **How do API validation errors end up next to the right input?**
+   The API's errors have a `details` array of `{field, message}`, where `field` is a path like `sets.1.reps`. `ApiError.fieldErrors()` turns that into an object keyed by path. Each input looks up its own key, and the workout form builds keys from the row index because rows are sent in display order. So "sets.1.reps" lands on the second row. Errors with no field, like a wrong password or an overlap, go in a banner at the top. A test checks that the second row is marked invalid and the first isn't.
+
+3. **How does the calendar handle overlapping events?**
+   Two layers. The server refuses an overlapping event with 409 `EVENT_OVERLAP` and lists the clashing events, using an advisory lock so two requests can't both slip through. In the UI that's treated as a question, not a failure: the form lists the clashes and offers "Save anyway", which resends the same body with `?allowOverlap=true`. If overlaps are saved, the week grid's lane algorithm draws them side by side instead of on top of each other.
+
+4. **What happens if a response arrives after the user has moved on?**
+   Each `useApiData` effect has a cleanup that marks its request as outdated. When the user changes day or week, React runs the cleanup before starting the new request, so the old response is ignored when it arrives. The test resolves the newer request first and the older one second, and checks the newer data is kept. Removing the `ignore` check makes that test fail.
+
+5. **How did you test the frontend without a backend?**
+   Pure logic (calendar layout, form-to-request conversion, meal grouping) has plain unit tests. Components are tested with React Testing Library, finding elements by label and role and clicking with user-event. For pages, `mockFetch` replaces the global `fetch` with a list of canned responses, so the real API client, error parsing and 401 handling all run. Tests run in New York time to catch UTC assumptions. As on the backend, I broke the code on purpose eight ways to check the tests notice: wrong set numbering, lanes off by one, DST-unsafe positioning, "Save anyway" not sending `allowOverlap`, an error not linked to its input, and others. All eight are caught.
+
+6. **Why build the week grid yourself instead of using a calendar library?**
+   The spec asked for it, and it's a small problem once split in two. `layoutWeek()` is pure: it splits events crossing midnight into per-day pieces, computes start and end minutes, and assigns lanes, all testable with plain objects. The component then just positions buttons absolutely inside a day column: top = minutes × pixels per minute. The hour lines are a repeating CSS gradient, not 24 extra elements.
