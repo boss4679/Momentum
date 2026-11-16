@@ -4,18 +4,24 @@
 // An event "intersects" the window when it starts before the window ends AND ends after the
 // window starts. That includes events that began before the window and run into it, which
 // "starts_at BETWEEN from AND to" would miss.
+const LIST_EVENTS_SQL = `
+  SELECT id, title, starts_at AS "startsAt", ends_at AS "endsAt", category, notes,
+         created_at AS "createdAt"
+  FROM calendar_events
+  WHERE user_id = $1
+    AND ($2::timestamptz IS NULL OR ends_at > $2)
+    AND ($3::timestamptz IS NULL OR starts_at < $3)
+  ORDER BY starts_at, id
+  LIMIT $4 OFFSET $5`;
+
 async function listEvents(db, userId, { from, to, limit, offset }) {
-  const { rows } = await db.query(
-    `SELECT id, title, starts_at AS "startsAt", ends_at AS "endsAt", category, notes,
-            created_at AS "createdAt"
-     FROM calendar_events
-     WHERE user_id = $1
-       AND ($2::timestamptz IS NULL OR ends_at > $2)
-       AND ($3::timestamptz IS NULL OR starts_at < $3)
-     ORDER BY starts_at, id
-     LIMIT $4 OFFSET $5`,
-    [userId, from ?? null, to ?? null, limit, offset],
-  );
+  const { rows } = await db.query(LIST_EVENTS_SQL, [
+    userId,
+    from ?? null,
+    to ?? null,
+    limit,
+    offset,
+  ]);
   return rows;
 }
 
@@ -118,4 +124,5 @@ module.exports = {
   createEvent,
   updateEvent,
   deleteEvent,
+  SQL: { LIST_EVENTS_SQL },
 };

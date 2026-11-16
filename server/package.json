@@ -14,7 +14,8 @@
     "migrate": "node scripts/migrate.js",
     "seed": "node scripts/seed.js",
     "test": "NODE_ENV=test jest --runInBand",
-    "test:coverage": "NODE_ENV=test jest --runInBand --coverage"
+    "test:coverage": "NODE_ENV=test jest --runInBand --coverage",
+    "explain": "node scripts/explain.js"
   },
   "dependencies": {
     "bcrypt": "^6.0.0",

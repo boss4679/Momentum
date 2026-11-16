@@ -19,9 +19,14 @@ function dayOfWeek(isoDate) {
   return new Date(`${isoDate}T00:00:00Z`).getUTCDay();
 }
 
+// Whole days from `from` to `to` (both 'YYYY-MM-DD'); negative if `to` is earlier.
+function daysBetween(from, to) {
+  return (Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / 86_400_000;
+}
+
 function isWeekend(isoDate) {
   const day = dayOfWeek(isoDate);
   return day === 0 || day === 6;
 }
 
-module.exports = { todayIn, addDays, dayOfWeek, isWeekend };
+module.exports = { todayIn, addDays, daysBetween, dayOfWeek, isWeekend };

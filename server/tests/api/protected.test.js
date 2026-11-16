@@ -35,6 +35,8 @@ const PROTECTED_ROUTES = [
   ['get', '/api/goals/1'],
   ['put', '/api/goals/1'],
   ['delete', '/api/goals/1'],
+  ['get', '/api/summary/daily'],
+  ['get', '/api/summary/trends'],
 ];
 
 describe.each(PROTECTED_ROUTES)('%s %s', (method, path) => {

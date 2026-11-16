@@ -208,4 +208,5 @@ module.exports = {
   deleteSets,
   deleteWorkout,
   findPersonalBests,
+  SQL: { SELECT_WORKOUTS },
 };

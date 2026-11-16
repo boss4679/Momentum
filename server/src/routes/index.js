@@ -12,5 +12,6 @@ router.use('/workouts', require('./workouts'));
 router.use('/events', require('./events'));
 router.use('/food-entries', require('./foodEntries'));
 router.use('/goals', require('./goals'));
+router.use('/summary', require('./summary'));
 
 module.exports = router;

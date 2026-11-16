@@ -45,4 +45,17 @@ async function findUserById(db, id) {
   return rows[0] ?? null;
 }
 
-module.exports = { createUser, findUserWithHashByEmail, findUserById };
+// The user's timezone and what today's date is there. "Today" depends on where the user is:
+// at 23:00 in Los Angeles it's already tomorrow in UTC. now() AT TIME ZONE tz gives the
+// local wall-clock time, and ::date keeps just the date.
+async function findUserClock(db, id) {
+  const { rows } = await db.query(
+    `SELECT timezone, (now() AT TIME ZONE timezone)::date AS today
+     FROM users
+     WHERE id = $1`,
+    [id],
+  );
+  return rows[0] ?? null;
+}
+
+module.exports = { createUser, findUserWithHashByEmail, findUserById, findUserClock };

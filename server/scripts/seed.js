@@ -1,12 +1,20 @@
-// Usage: npm run seed
+// Usage: npm run seed                         demo user only
+//        npm run seed -- --extra-users=500    plus 500 load-test users
+//
 // Creates (or re-creates) a demo user with ~4 months of workouts, meals, goals and events,
 // so the dashboard, trends and charts have real-looking data to show.
 // Log in as demo@momentum.dev / password123.
+//
+// --extra-users adds that many more users with the same kind of history. They're there for
+// docs/indexes.md: with a single user, every row in every table is "this user's" row and an
+// index on user_id can't help. With 500 users the demo user owns 0.2% of the rows, as one
+// user would in a real app, and EXPLAIN shows what the indexes do. Load-test users are named
+// loadtest+N@example.com and are replaced on every run.
 const bcrypt = require('bcrypt');
 const pool = require('../src/db/pool');
 const { withTransaction } = require('../src/db/transaction');
 const { createRandom } = require('./seed/random');
-const { todayIn, addDays, isWeekend } = require('./seed/dates');
+const { todayIn, addDays, isWeekend } = require('../src/utils/dates');
 const { EXERCISES, ROUTINES, FOODS, WEEKDAY_EVENTS, WEEKEND_EVENTS } = require('./seed/catalog');
 
 const DEMO_EMAIL = 'demo@momentum.dev';
@@ -15,6 +23,7 @@ const DEMO_TIMEZONE = 'America/Los_Angeles';
 const HISTORY_DAYS = 120; // past days of data, including today
 const FUTURE_DAYS = 14; // calendar events also run two weeks ahead
 const SEED = 42;
+const LOADTEST_EMAIL_PATTERN = 'loadtest+%@example.com';
 
 const BCRYPT_ROUNDS = 10;
 
@@ -175,16 +184,12 @@ function generateEvents(today, rng) {
 // turns the arrays back into rows. That's a single round trip for hundreds of rows, and
 // it's still fully parameterized. No SQL is built from strings.
 
-async function insertUser(client) {
-  // Deleting the old demo user cascades to all of its rows, which makes the seed re-runnable.
-  await client.query('DELETE FROM users WHERE email = $1', [DEMO_EMAIL]);
-
-  const passwordHash = await bcrypt.hash(DEMO_PASSWORD, BCRYPT_ROUNDS);
+async function insertUser(client, { email, passwordHash, timezone }) {
   const { rows } = await client.query(
     `INSERT INTO users (email, password_hash, timezone)
      VALUES ($1, $2, $3)
      RETURNING id`,
-    [DEMO_EMAIL, passwordHash, DEMO_TIMEZONE],
+    [email, passwordHash, timezone],
   );
   return rows[0].id;
 }
@@ -212,16 +217,21 @@ async function insertWorkouts(client, userId, workouts, exerciseIds) {
     durationSec: [],
   };
 
-  for (const workout of workouts) {
-    // Workouts go in one at a time because each set needs its workout's generated id.
-    const { rows } = await client.query(
-      `INSERT INTO workouts (user_id, performed_on, notes)
-       VALUES ($1, $2, $3)
-       RETURNING id`,
-      [userId, workout.performedOn, workout.notes],
-    );
-    const workoutId = rows[0].id;
+  // All workouts in one statement. Each set needs its workout's generated id, so RETURNING
+  // gives back (id, performed_on) pairs. The generator makes at most one workout per day,
+  // so the date identifies the workout. (SQL doesn't promise RETURNING rows come back in
+  // insert order, so matching by position would be fragile.)
+  const { rows } = await client.query(
+    `INSERT INTO workouts (user_id, performed_on, notes)
+     SELECT $1, t.performed_on, t.notes
+     FROM unnest($2::date[], $3::text[]) AS t(performed_on, notes)
+     RETURNING id, performed_on`,
+    [userId, workouts.map((w) => w.performedOn), workouts.map((w) => w.notes)],
+  );
+  const workoutIdByDate = new Map(rows.map((r) => [r.performed_on, r.id]));
 
+  for (const workout of workouts) {
+    const workoutId = workoutIdByDate.get(workout.performedOn);
     for (const exercise of workout.exercises) {
       exercise.sets.forEach((set, index) => {
         sets.workoutId.push(workoutId);
@@ -301,32 +311,86 @@ async function insertEvents(client, userId, timeZone, events) {
 
 // ---------------------------------------------------------------------------
 
-async function main() {
-  const rng = createRandom(SEED);
-  const today = todayIn(DEMO_TIMEZONE);
-
+// Generates and inserts one user's whole history, in one transaction, so a failure never
+// leaves a half-seeded user behind. Returns row counts for the log.
+async function seedUser({ email, passwordHash, timezone, seed }) {
+  const rng = createRandom(seed);
+  const today = todayIn(timezone);
   const workouts = generateWorkouts(today, rng);
   const foodEntries = generateFoodEntries(today, rng);
   const goals = generateGoals(today);
   const events = generateEvents(today, rng);
 
-  // One transaction: if any insert fails, there's no half-seeded demo user left behind.
   const setCount = await withTransaction(async (client) => {
-    const userId = await insertUser(client);
+    const userId = await insertUser(client, { email, passwordHash, timezone });
     const exerciseIds = await insertExercises(client, userId);
     const sets = await insertWorkouts(client, userId, workouts, exerciseIds);
     await insertFoodEntries(client, userId, foodEntries);
     await insertGoals(client, userId, goals);
-    await insertEvents(client, userId, DEMO_TIMEZONE, events);
+    await insertEvents(client, userId, timezone, events);
     return sets;
   });
 
-  console.log(`Seeded ${DEMO_EMAIL} (password: ${DEMO_PASSWORD}), today = ${today}`);
+  return {
+    today,
+    workouts: workouts.length,
+    sets: setCount,
+    foodEntries: foodEntries.length,
+    goals: goals.length,
+    events: events.length,
+  };
+}
+
+function parseExtraUsers(argv) {
+  const arg = argv.find((a) => a.startsWith('--extra-users='));
+  if (!arg) return 0;
+  const count = Number(arg.split('=')[1]);
+  if (!Number.isInteger(count) || count < 0) {
+    throw new Error('--extra-users must be a whole number, e.g. --extra-users=500');
+  }
+  return count;
+}
+
+async function main() {
+  const extraUsers = parseExtraUsers(process.argv.slice(2));
+
+  // Deleting old seeded users cascades to all of their rows, which makes the seed re-runnable.
+  await pool.query('DELETE FROM users WHERE email = $1', [DEMO_EMAIL]);
+  await pool.query('DELETE FROM users WHERE email LIKE $1', [LOADTEST_EMAIL_PATTERN]);
+
+  const demoHash = await bcrypt.hash(DEMO_PASSWORD, BCRYPT_ROUNDS);
+  const demo = await seedUser({
+    email: DEMO_EMAIL,
+    passwordHash: demoHash,
+    timezone: DEMO_TIMEZONE,
+    seed: SEED,
+  });
+
+  console.log(`Seeded ${DEMO_EMAIL} (password: ${DEMO_PASSWORD}), today = ${demo.today}`);
   console.log(`  exercises:       ${EXERCISES.length}`);
-  console.log(`  workouts:        ${workouts.length} (${setCount} sets)`);
-  console.log(`  food entries:    ${foodEntries.length}`);
-  console.log(`  goals:           ${goals.length}`);
-  console.log(`  calendar events: ${events.length}`);
+  console.log(`  workouts:        ${demo.workouts} (${demo.sets} sets)`);
+  console.log(`  food entries:    ${demo.foodEntries}`);
+  console.log(`  goals:           ${demo.goals}`);
+  console.log(`  calendar events: ${demo.events}`);
+
+  if (extraUsers > 0) {
+    // One hash shared by every load-test user: bcrypt is slow on purpose, and hashing 500
+    // passwords would add most of a minute for accounts nobody logs into.
+    const sharedHash = await bcrypt.hash('loadtest-password', BCRYPT_ROUNDS);
+    for (let i = 1; i <= extraUsers; i++) {
+      await seedUser({
+        email: `loadtest+${i}@example.com`,
+        passwordHash: sharedHash,
+        timezone: 'UTC',
+        seed: SEED + i, // a different but repeatable history per user
+      });
+      if (i % 100 === 0 || i === extraUsers) console.log(`  load-test users: ${i}/${extraUsers}`);
+    }
+  }
+
+  // Refresh the planner's statistics (row counts, value distributions) after a big load,
+  // so EXPLAIN reflects the new data instead of stale estimates.
+  await pool.query('ANALYZE');
 }
 
 main()

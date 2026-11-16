@@ -156,3 +156,59 @@ an interviewer might ask about it.
 
 6. **How does personal bests pick the record set when weights tie?**
    `DISTINCT ON (exercise_id) ... ORDER BY exercise_id, weight_kg DESC, reps DESC, performed_on ASC`: heaviest first, then more reps, then the earliest date, since that's when the record was first set. The test uses a tiny history where 62.5 kg × 5 happened on Mar 5 and again on Mar 7, and expects Mar 5.
+
+---
+
+## Milestone 4: summary and trends (the SQL-heavy part)
+
+### What was built
+
+- **`GET /api/summary/daily?date=`**: one call for the dashboard. It returns that day's workouts (exercises, sets, volume), the next 5 events, calories against the goal (per meal, with macros), the 7-day rolling average and the workout streak.
+  - The date defaults to today in the user's timezone.
+  - Five independent queries run in parallel with `Promise.all`.
+- **`GET /api/summary/trends?from=&to=`**: daily calories with the rolling average and that day's goal, weekly workout volume, and current/longest streak.
+  - The range defaults to the last 30 days and is capped at 366 days.
+- **All of the SQL is in `src/db/queries/summary.js`,** with a step-by-step comment above each query.
+- **Seed and measurement:** `npm run seed -- --extra-users=500` adds 500 load-test users (about 900k rows in total), and `npm run explain` runs EXPLAIN ANALYZE on the API's real SQL.
+- **`docs/indexes.md`:** before/after plans and timings, including the index's limitation for event-overlap queries.
+- **Tests:** 297 in total. `summary.test.js` uses a hand-built March where every expected number can be worked out on paper: rolling averages at the start of the range, a streak broken by a missing day, two workouts on one day counting once, a week with no workouts, the goal changing mid-range, and timezone day boundaries.
+
+### Key concepts
+
+- **Window functions:** `avg(x) OVER (ORDER BY day ROWS BETWEEN 6 PRECEDING AND CURRENT ROW)` computes a value from a "window" of neighbouring rows without collapsing them, unlike GROUP BY. `WINDOW last_7_days AS (...)` names a window so two functions can share it.
+- **Gap-filling with `generate_series`:** `ROWS 6 PRECEDING` means 6 rows, not 6 days. Generating every calendar day and LEFT JOINing the data makes rows equal days. The same pattern gives charts a row for weeks with zero workouts.
+- **Range lookback:** the series starts 6 days before `from`, so the first day in the range gets a full window. The extra days are filtered out at the end.
+- **NULL handling in aggregates:** `avg()` and `count(col)` ignore NULLs, so unlogged days don't count as 0 kcal. `sum()` of all NULLs is NULL, hence `COALESCE(..., 0)`.
+- **Gaps and islands:** `day - row_number()` stays constant across a run of consecutive dates. GROUP BY that value gives each streak's start, end and length.
+- **LATERAL joins:** a subquery that runs once per row of the left side, used for "the goal in force on each day". With the right index (`daily_goals (user_id, effective_from)`), each run is a single index lookup.
+- **`DISTINCT ON`, `array_agg(DISTINCT ... ORDER BY ...)` and `unnest(...) WITH ORDINALITY`:** Postgres tools for "best row per group", "list of names per workout" and "fixed list of meals in order".
+- **LEFT JOIN conditions belong in ON, not WHERE:** a WHERE condition on the right-hand table removes its NULL rows and silently turns the LEFT JOIN into an inner join.
+- **Timezones:** `('2026-01-15'::date)::timestamp AT TIME ZONE 'America/Los_Angeles'` is the instant that day starts in LA (08:00 UTC). "Today" is `(now() AT TIME ZONE tz)::date`.
+- **Reading EXPLAIN ANALYZE:**
+  - `Seq Scan` + `Rows Removed by Filter` means the whole table was read. `Index Cond` vs `Filter` shows which conditions the index handles.
+  - `Buffers` counts 8 kB pages touched, which is more stable than milliseconds.
+  - `Index Only Scan` answers from the index alone. `Backward` and `Incremental Sort` mean the index also supplied the ordering.
+- **Composite index column order:** the equality column (user_id) goes first and the range column (date) second, so one user's rows are contiguous and already sorted by date.
+
+### Interview questions
+
+1. **Walk me through your 7-day rolling average query.**
+   I generate one row per calendar day, starting 6 days before the requested range, and LEFT JOIN each day's calorie total. Days with nothing logged become NULL instead of disappearing. Then `avg(calories) OVER (ORDER BY day ROWS BETWEEN 6 PRECEDING AND CURRENT ROW)` averages each day with the 6 rows before it. Because there's exactly one row per day, that's 7 calendar days. `avg` skips NULLs, so a forgotten log doesn't count as 0 kcal, and `count(calories)` over the same window reports how many days the average is based on. Finally I filter out the 6 lookback days. A test checks that the first day of the range uses data from before the range.
+
+2. **How do you calculate the workout streak?**
+   It's a gaps-and-islands problem. I take distinct workout dates, number them with `row_number()`, and compute `day - row_number`. For consecutive days, both go up by one, so the difference is constant; any gap changes it. Grouping by that difference gives each streak's start, end and length. The current streak is the island that ends today or yesterday; yesterday counts because today's workout may not be logged yet. Longest is `max(length)`.
+
+3. **Why not just fetch the rows and compute this in JavaScript?**
+   The database already has the data and the indexes. Computing in SQL means reading about 150 rows through an index and sending back 30 small rows, instead of sending every food entry over the network and looping in Node. It also keeps the logic in one declarative query that I can EXPLAIN. The JavaScript in the controller only reshapes results, like summing four per-meal rows.
+
+4. **How did you decide which indexes to add, and how do you know they work?**
+   From the queries: nearly every read is "this user's rows in this date range", so each table got `(user_id, date)`. Equality first, range second, so one user's rows are contiguous and date-ordered. I measured with 500 extra seeded users (about 260k food entries), using EXPLAIN (ANALYZE, BUFFERS) on the exact SQL strings the API runs, with the index migration rolled back and then re-applied. For example, the 30-day calorie query went from a parallel sequential scan of 3,208 pages to an index range scan of 5 pages (7.8 ms → 0.17 ms). I also documented where the index isn't enough: the calendar query can only use the index for `starts_at < to`, not `ends_at > from`.
+
+5. **Why did you need 500 extra users to test an index?**
+   With only one user, `user_id = 1` matches every row. Reading the whole table is then genuinely the cheapest plan, and EXPLAIN would show the planner (correctly) ignoring the index. Indexes pay off when the query is selective, here 0.2% of rows. The seed refreshes the planner's statistics with `ANALYZE` afterwards so its estimates match the new data.
+
+6. **What does the timezone do in the daily summary?**
+   A day starts at a different instant in each zone. The upcoming-events query turns the requested date into the moment it starts in the user's zone with `date::timestamp AT TIME ZONE tz`. A test shows the same 07:30 UTC event counts as Jan 15 for a UTC user, but Jan 14 (23:30) for a Los Angeles user. When the date is today, it looks ahead from `now()`, so events that already finished aren't "upcoming".
+
+7. **How did you make sure the tests would catch a wrong query?**
+   I broke the SQL on purpose in five ways and checked each one made a test fail: a 6-day window instead of 7, no lookback before the range, unlogged days counted as zero, a streak that isn't kept alive by yesterday, and a window over logged days only (no gap filling). They all failed. One "passed" at first, but only because my script had edited the explanatory comment instead of the SQL; re-run against the real line, it failed as it should.
